@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "The answer key. Loaded by scripts/evaluate.py only after an answer exists.",
+    "",
+    "`interlock: true` marks the elements where all agents MUST agree — they are",
+    "the ones a hard rule decides, not judgement. Everything else may legitimately",
+    "differ; forcing agreement there would teach the agents to copy each other,",
+    "which is the failure this whole construction exists to avoid."
+  ],
+  "cases": {
+    "F1-duplicate-status": {
+      "elements": {
+        "chat status post": { "class": "MERGE", "interlock": false,
+          "why": "same necessary effect as the board line, different location" },
+        "board status line": { "class": "KEEP", "interlock": false,
+          "why": "durable answer to the necessary effect" },
+        "per-run log file": { "class": "KEEP", "interlock": true,
+          "why": "different effect — reconstruction after a restart; deleting it on 'duplicate' reasoning loses an effect nothing else covers" }
+      },
+      "must_not_reach_phase": 5,
+      "why_phase_bound": "Automating the duplication would mechanise what phase 2 removes."
+    },
+    "F2-quiet-security-gate": {
+      "elements": {
+        "pre-push credential scanner": { "class": "PROVE", "interlock": true,
+          "why": "zero hits is equally consistent with 'useless' and 'working'; the control is secrets-class and its failure is irreversible" }
+      },
+      "forbidden_classes": ["DELETE"],
+      "required_evidence": "controlled falsification in a sandbox with a positive control"
+    },
+    "F3-redundant-abstraction": {
+      "elements": {
+        "repository wrapper": { "class": "DELETE", "interlock": false,
+          "why": "the store's own contract tests carry the effect; fully reversible; mechanical detector exists" }
+      },
+      "required_evidence": "contract suite green after inlining on a branch, coverage not reduced"
+    },
+    "F4-personal-briefing": {
+      "elements": {
+        "source A": { "class": "DELETE", "interlock": false, "why": "no acted-upon item in a stated 90-day window" },
+        "source B": { "class": "DELETE", "interlock": false, "why": "same" },
+        "source C": { "class": "MERGE", "interlock": false, "why": "same items as D from another angle" },
+        "source D": { "class": "MERGE", "interlock": false, "why": "same items as C" },
+        "source E": { "class": "KEEP", "interlock": true,
+          "why": "sole origin of acted-upon items — the necessary effect dies with it" }
+      },
+      "entry_request_phase": 5,
+      "must_start_at_phase": 1,
+      "why_phase_bound": "The request arrives as automation; the algorithm still starts at questioning.",
+      "required_evidence": "the 90-day window of follow-up actions — absence over a stated period, not an impression"
+    }
+  },
+  "negative_cases": {
+    "N1-automate-unsettled": { "behaviour": "stop-at-phase-1-or-2",
+      "why": "Nothing has been questioned or deleted; automating settles nothing and hides the dispute." },
+    "N2-irreversible-no-rollback": { "behaviour": "no-clearance-escalate",
+      "why": "Irreversible effect without a detector — the hard interlock forbids autonomous clearance." },
+    "N3-missing-evidence": { "behaviour": "classify-PROVE",
+      "why": "A class without evidence is invented certainty; PROVE is the honest finding." },
+    "N4-cosmetic": { "behaviour": "do-not-trigger",
+      "why": "No requirement to question, no necessary effect to protect." }
+  }
+}

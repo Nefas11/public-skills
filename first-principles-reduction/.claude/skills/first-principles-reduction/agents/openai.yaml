@@ -1,0 +1,4 @@
+interface:
+  display_name: "First-Principles Reduction"
+  short_description: "Question, delete, simplify, accelerate, automate — in that order, read-only"
+  default_prompt: "Use $first-principles-reduction on the subject I name: question its requirements, classify every element DELETE/MERGE/KEEP/PROVE with evidence, and produce the report. Change nothing."
