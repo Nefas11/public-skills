@@ -1,0 +1,200 @@
+"""Functional tests for scripts/sync-from-upstream.sh.
+
+The mirror check exists to prove that what this repository publishes is what
+upstream reviewed. It had the hole its upstream counterpart was found to have
+in claude-skills#36: `check_self` walked a hard-coded list of directories, so a
+loose file beside SKILL.md never entered the comparison. Measured before the
+fix, on a copy of this repository with a licence added by hand:
+
+    LICENSE deleted from one installed copy   -> "mirror ok", exit 0
+    LICENSE corrupted in one installed copy   -> "mirror ok", exit 0
+
+Both should be exit 1. A copy may declare `license: MIT-0` in its frontmatter
+and carry no terms, and the gate says nothing — and the copies are exactly what
+people install and what gets published.
+
+These tests run the real script against a throwaway skeleton in a tmp dir, so
+the checked-in skills are never touched. The skeleton carries a licence even
+while the mirrored skill does not yet, because the rule has to be under test
+before the first licensed skill arrives, not after.
+
+Stdlib only; run with:  python3 -m unittest discover -s tests -v
+"""
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = REPO_ROOT / "scripts" / "sync-from-upstream.sh"
+
+SKILL = "demo-skill"
+COPIES = (f".claude/skills/{SKILL}", f".agents/skills/{SKILL}")
+LICENCE_TEXT = "MIT No Attribution\n\nCopyright 2026 Example\n"
+SKILL_MD = """---
+name: demo-skill
+description: >-
+  A fixture skill. Not published, not installed, only ever read by these tests.
+license: MIT-0
+---
+
+# demo-skill
+
+Body text.
+"""
+
+
+def run(script, *args):
+    return subprocess.run(["sh", str(script), *args], capture_output=True, text=True)
+
+
+class MirrorSkeleton(unittest.TestCase):
+    """A tmp mirror: the real script, a lock file, one licensed skill, two copies."""
+
+    licensed = True
+
+    def setUp(self):
+        self.repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo)
+        (self.repo / "scripts").mkdir()
+        self.script = self.repo / "scripts" / "sync-from-upstream.sh"
+        shutil.copy2(SCRIPT, self.script)
+
+        root = self.repo / SKILL
+        (root / "references").mkdir(parents=True)
+        (root / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+        (root / "references" / "notes.md").write_text("# notes\n", encoding="utf-8")
+        if self.licensed:
+            (root / "LICENSE").write_text(LICENCE_TEXT, encoding="utf-8")
+
+        for rel in COPIES:
+            copy = root / rel
+            copy.mkdir(parents=True)
+            shutil.copy2(root / "SKILL.md", copy / "SKILL.md")
+            shutil.copytree(root / "references", copy / "references")
+            if self.licensed:
+                shutil.copy2(root / "LICENSE", copy / "LICENSE")
+
+        (self.repo / "upstream.lock").write_text(
+            f"# skill  upstream-commit  synced-on\n{SKILL} 0123456789abcdef 2026-09-09\n",
+            encoding="utf-8")
+
+    def check(self):
+        return run(self.script, "--check")
+
+    def copy_path(self, which=0):
+        return self.repo / SKILL / COPIES[which]
+
+    def assert_ok(self):
+        proc = self.check()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("mirror ok", proc.stdout)
+
+    def assert_fails(self, needle):
+        proc = self.check()
+        self.assertEqual(proc.returncode, 1, f"--check must fail ({needle})\n{proc.stdout}")
+        self.assertIn(needle, proc.stderr)
+        self.assertNotIn("mirror ok", proc.stdout)
+
+
+class TestCleanSkeletonPasses(MirrorSkeleton):
+    """Positive control. Without it the negative ones prove only that it never passes."""
+
+    def test_a_correct_mirror_is_green(self):
+        self.assert_ok()
+
+
+class TestLicenceTravelsWithTheCopies(MirrorSkeleton):
+    """The regression from claude-skills#36, in this repository's own script."""
+
+    def test_a_missing_licence_in_a_copy_is_drift(self):
+        (self.copy_path() / "LICENSE").unlink()
+        self.assert_fails("LICENSE")
+
+    def test_a_corrupted_licence_in_a_copy_is_drift(self):
+        (self.copy_path(1) / "LICENSE").write_text("All rights reserved.\n", encoding="utf-8")
+        self.assert_fails("LICENSE")
+
+    def test_a_licence_only_in_a_copy_is_drift(self):
+        # The reverse direction: terms appear in a copy that the skill root
+        # never granted. Nobody should be able to add a licence downstream.
+        (self.repo / SKILL / "LICENSE").unlink()
+        self.assert_fails("LICENSE")
+
+    def test_declaring_a_licence_without_shipping_one_fails(self):
+        for rel in COPIES:
+            (self.repo / SKILL / rel / "LICENSE").unlink()
+        (self.repo / SKILL / "LICENSE").unlink()
+        self.assert_fails("declares a license")
+
+
+class TestUnlicensedSkillStillPasses(MirrorSkeleton):
+    """A skill that claims no licence must not be forced to carry a file.
+
+    Today's mirrored skill is exactly that, so a rule that demanded LICENSE
+    unconditionally would turn the whole gate red for the wrong reason.
+    """
+
+    licensed = False
+
+    def test_no_declaration_no_requirement(self):
+        # The declaration has to go from the root AND both copies: dropping it
+        # in one place only is ordinary drift, which the gate would report for
+        # a different reason and hide what this test is actually about.
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text(path.read_text(encoding="utf-8").replace("license: MIT-0\n", ""),
+                            encoding="utf-8")
+        self.assert_ok()
+
+    def test_a_declaration_without_a_file_still_fails(self):
+        # Same skeleton, declaration left in place: the fixture proves the rule
+        # keys on the declaration and not on the file's absence alone.
+        self.assert_fails("declares a license")
+
+
+class TestCopiesCarryNothingExtra(MirrorSkeleton):
+    """The old loop only ever looked at names it already knew."""
+
+    def test_a_stray_file_in_a_copy_is_drift(self):
+        (self.copy_path() / "README.md").write_text("stray\n", encoding="utf-8")
+        self.assert_fails("not part of the skill root")
+
+    def test_a_stray_directory_in_a_copy_is_drift(self):
+        extra = self.copy_path(1) / "templates"
+        extra.mkdir()
+        (extra / "t.md").write_text("x\n", encoding="utf-8")
+        self.assert_fails("has no counterpart in the skill root")
+
+
+class TestOrdinaryDriftStillCaught(MirrorSkeleton):
+    """Guard the checks that existed before, so this change adds without removing."""
+
+    def test_a_mutated_skill_md_is_drift(self):
+        skill = self.copy_path() / "SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8") + "\nsmuggled\n", encoding="utf-8")
+        self.assert_fails("SKILL.md differs")
+
+    def test_a_mutated_reference_is_drift(self):
+        (self.copy_path(1) / "references" / "notes.md").write_text("# tampered\n",
+                                                                   encoding="utf-8")
+        self.assert_fails("references differs")
+
+    def test_a_skill_missing_from_the_lock_is_drift(self):
+        (self.repo / "upstream.lock").write_text("# skill  upstream-commit  synced-on\n",
+                                                 encoding="utf-8")
+        self.assert_fails("not recorded in upstream.lock")
+
+
+class TestThisRepositoryIsInSync(unittest.TestCase):
+    """What is committed here is a release artefact — keep it true."""
+
+    def test_repo_check_is_green(self):
+        proc = run(SCRIPT, "--check")
+        self.assertEqual(proc.returncode, 0,
+                         f"run `sh scripts/sync-from-upstream.sh <upstream>`\n{proc.stderr}")
+
+
+if __name__ == "__main__":
+    unittest.main()

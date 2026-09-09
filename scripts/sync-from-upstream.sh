@@ -14,8 +14,9 @@
 #       clean under the copied paths, so the recorded commit is the truth.
 #   scripts/sync-from-upstream.sh --check [<upstream-checkout>]
 #       Verify the mirror. Without a checkout: every skill directory has a
-#       SKILL.md, is listed in upstream.lock, and its installed copies under
-#       .claude/skills/ and .agents/skills/ match the skill root. With a
+#       SKILL.md, is listed in upstream.lock, carries a licence text if it
+#       declares one, and its installed copies under .claude/skills/ and
+#       .agents/skills/ match the skill root and contain nothing else. With a
 #       checkout: additionally, every mirrored skill is byte-identical to the
 #       checkout. Exit 1 on any difference.
 set -eu
@@ -23,6 +24,15 @@ set -eu
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 lock="$repo_root/upstream.lock"
 status=0
+
+# What an installed copy may contain, and nothing else. The check used to walk
+# a hard-coded list of directories, so a loose file beside SKILL.md — LICENSE
+# above all — was invisible: both copies could declare `license: MIT-0` and
+# ship no terms while --check stayed green. The copies are what people install
+# and what gets published, so they are the artefact a licence claim has to be
+# true of. Same class of hole as the one reviewed upstream in claude-skills#36.
+resource_files="LICENSE"
+resource_dirs="references agents scripts templates"
 
 fail() { echo "FAIL: $*" >&2; status=1; }
 
@@ -43,13 +53,32 @@ check_self() {
     if ! grep -q "^$s " "$lock" 2>/dev/null; then
       fail "$s is not recorded in upstream.lock"
     fi
+    # A declared licence with no licence text is a claim the artefact does not
+    # carry. Checked at the skill root; the copies inherit it through the diff.
+    if grep -q '^license:[[:space:]]*[^[:space:]]' "$repo_root/$s/SKILL.md" 2>/dev/null &&
+       [ ! -f "$repo_root/$s/LICENSE" ]; then
+      fail "$s: SKILL.md declares a license but $s/LICENSE is missing"
+    fi
     for copy in "$repo_root/$s/.claude/skills/$s" "$repo_root/$s/.agents/skills/$s"; do
       [ -d "$copy" ] || continue
-      for part in SKILL.md references agents scripts templates; do
-        if [ -e "$repo_root/$s/$part" ] && \
-           ! diff -r -x __pycache__ "$repo_root/$s/$part" "$copy/$part" >/dev/null 2>&1; then
-          fail "$s: ${copy#"$repo_root"/}/$part differs from the skill root"
+      for part in SKILL.md $resource_files $resource_dirs; do
+        if [ -e "$repo_root/$s/$part" ]; then
+          if ! diff -r -x __pycache__ "$repo_root/$s/$part" "$copy/$part" >/dev/null 2>&1; then
+            fail "$s: ${copy#"$repo_root"/}/$part differs from the skill root"
+          fi
+        elif [ -e "$copy/$part" ]; then
+          fail "$s: ${copy#"$repo_root"/}/$part has no counterpart in the skill root"
         fi
+      done
+      # Nothing in a copy that the skill root does not account for. Without
+      # this, the loop above only ever looks at names it already knows.
+      for entry in "$copy"/*; do
+        [ -e "$entry" ] || continue
+        base=${entry##*/}
+        case " SKILL.md $resource_files $resource_dirs " in
+          *" $base "*) continue ;;
+        esac
+        fail "$s: ${copy#"$repo_root"/}/$base is not part of the skill root"
       done
     done
   done
