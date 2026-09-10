@@ -111,10 +111,21 @@ sync() { # $1 = upstream checkout, rest = skills
   if [ -z "$skills" ]; then
     echo "nothing to sync: upstream.lock is empty and no skill was named" >&2; exit 2
   fi
+  # PREFLIGHT — every named skill is checked before any of them is written.
+  # The licence rule belongs here and not only in --check: a sync that copies a
+  # skill declaring `license:` without a LICENSE file leaves the mirror in a
+  # state its own gate then reports as broken, after the fact. Measured on a
+  # throwaway tree: upstream drops the licence file but keeps the declaration,
+  # the sync copies it happily, and only the next --check complains. Same shape
+  # as the write-before-validation hole reviewed in claude-skills#36.
   for s in $skills; do
     if [ ! -f "$up/$s/SKILL.md" ]; then echo "no skill at $up/$s" >&2; exit 2; fi
     if [ -n "$(git -C "$up" status --porcelain -- "$s")" ]; then
       echo "upstream checkout is dirty under $s — commit or stash first; the lock must name a real commit" >&2
+      exit 2
+    fi
+    if grep -q '^license:[[:space:]]*[^[:space:]]' "$up/$s/SKILL.md" && [ ! -f "$up/$s/LICENSE" ]; then
+      echo "refusing to sync $s: its SKILL.md declares a license but $up/$s/LICENSE is missing — nothing was written" >&2
       exit 2
     fi
   done

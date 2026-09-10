@@ -187,6 +187,76 @@ class TestOrdinaryDriftStillCaught(MirrorSkeleton):
         self.assert_fails("not recorded in upstream.lock")
 
 
+class TestSyncValidatesBeforeWriting(unittest.TestCase):
+    """The sync path needs the licence rule too, not only --check.
+
+    Found while widening the review findings from claude-skills#36 to this
+    repository. Measured before the fix, on a throwaway tree: upstream drops the
+    LICENSE file but keeps `license:` in its frontmatter, the sync copies the
+    skill happily, and only the *next* --check reports the mirror as broken.
+    A gate that runs after the write describes damage instead of preventing it.
+    """
+
+    SKILL = "demo-skill"
+    SKILL_MD = ("---\nname: demo-skill\ndescription: >-\n  A fixture.\n"
+                "license: MIT-0\n---\n\n# demo-skill\n")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+        # A fake upstream checkout: git-backed, because the sync insists on one.
+        self.upstream = self.tmp / "upstream"
+        (self.upstream / self.SKILL / "references").mkdir(parents=True)
+        (self.upstream / self.SKILL / "SKILL.md").write_text(self.SKILL_MD, encoding="utf-8")
+        (self.upstream / self.SKILL / "LICENSE").write_text(LICENCE_TEXT, encoding="utf-8")
+        (self.upstream / self.SKILL / "references" / "n.md").write_text("x\n", encoding="utf-8")
+        self.git("init", "-q", "-b", "main")
+        self.commit("init")
+
+        self.mirror = self.tmp / "mirror"
+        (self.mirror / "scripts").mkdir(parents=True)
+        shutil.copy2(SCRIPT, self.mirror / "scripts" / "sync-from-upstream.sh")
+        (self.mirror / "upstream.lock").write_text(
+            f"# skill  upstream-commit  synced-on\n{self.SKILL} 0000000 2026-01-01\n",
+            encoding="utf-8")
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.upstream), *args], check=True,
+                       capture_output=True, text=True)
+
+    def commit(self, message):
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                 "commit", "-q", "-m", message)
+
+    def sync(self):
+        return subprocess.run(
+            ["sh", str(self.mirror / "scripts" / "sync-from-upstream.sh"),
+             str(self.upstream), self.SKILL],
+            capture_output=True, text=True, cwd=str(self.mirror))
+
+    def test_a_licensed_skill_syncs(self):
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue((self.mirror / self.SKILL / "LICENSE").is_file())
+
+    def test_a_declaration_without_a_licence_file_is_refused_before_any_write(self):
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
+        mirrored = self.mirror / self.SKILL / "LICENSE"
+        before = mirrored.read_bytes()
+
+        (self.upstream / self.SKILL / "LICENSE").unlink()
+        self.commit("licence removed upstream, declaration left behind")
+
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 2, "the sync must refuse, not copy")
+        self.assertIn("refusing to sync", proc.stderr)
+        self.assertNotIn("synced", proc.stdout)
+        self.assertTrue(mirrored.is_file(), "the mirrored licence was deleted anyway")
+        self.assertEqual(mirrored.read_bytes(), before)
+
+
 class TestThisRepositoryIsInSync(unittest.TestCase):
     """What is committed here is a release artefact — keep it true."""
 
