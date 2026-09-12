@@ -168,6 +168,125 @@ class TestCopiesCarryNothingExtra(MirrorSkeleton):
         self.assert_fails("has no counterpart in the skill root")
 
 
+class TestTheInventoryIsReal(MirrorSkeleton):
+    """"Contains nothing else" has to mean the actual contents.
+
+    Raised in review of public-skills#1. The first version walked `"$copy"/*`
+    and compared each name against a joined string. Three ways past it, each
+    measured returning `mirror ok` before the fix:
+
+      * `*` never matches a name beginning with a dot,
+      * `[ -e ]` is false for a symlink whose target is gone, so a broken one
+        was skipped entirely,
+      * a substring test accepted a file literally called "LICENSE references",
+        because that string occurs inside the list of allowed names.
+    """
+
+    def test_a_dotfile_in_a_copy_is_drift(self):
+        (self.copy_path() / ".extra.md").write_text("synthetic\n", encoding="utf-8")
+        self.assert_fails("not part of the skill root")
+
+    def test_a_dot_directory_in_a_copy_is_drift(self):
+        extra = self.copy_path() / ".extra"
+        extra.mkdir()
+        (extra / "notes.md").write_text("synthetic\n", encoding="utf-8")
+        self.assert_fails("not part of the skill root")
+
+    def test_a_broken_symlink_in_a_copy_is_drift(self):
+        (self.copy_path() / "stray.md").symlink_to("/nonexistent/target")
+        self.assert_fails("not part of the skill root")
+
+    def test_a_name_containing_two_allowed_names_is_drift(self):
+        # "LICENSE references" is neither LICENSE nor references. The old
+        # substring test saw it inside " SKILL.md LICENSE references ... ".
+        (self.copy_path() / "LICENSE references").write_text("synthetic\n", encoding="utf-8")
+        self.assert_fails("not part of the skill root")
+
+    def test_the_untouched_copies_still_pass(self):
+        # Positive control for the four above: an inventory rule that rejects
+        # everything would satisfy them all and break the repository.
+        self.assert_ok()
+
+
+class TestLicenceComesFromTheFrontmatter(MirrorSkeleton):
+    """A fenced example in the body is documentation, not metadata.
+
+    Both licence checks used to grep the whole SKILL.md. A skill explaining
+    frontmatter — exactly what a skill about skills would do — was therefore
+    read as licensed, and its sync refused with nothing wrong. The opposite
+    direction was open too: `"license": MIT-0` is valid YAML and matched
+    nothing, so a real declaration without a LICENSE file passed.
+    """
+
+    licensed = False
+
+    def write_skill(self, frontmatter_line, body_example=False):
+        text = "---\nname: demo-skill\ndescription: >-\n  A fixture.\n"
+        if frontmatter_line:
+            text += frontmatter_line + "\n"
+        text += "---\n\n# demo-skill\n"
+        if body_example:
+            text += "\nExample only:\n\n```yaml\nlicense: MIT-0\n```\n"
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text(text, encoding="utf-8")
+
+    def test_a_body_example_does_not_demand_a_licence_file(self):
+        self.write_skill(None, body_example=True)
+        self.assert_ok()
+
+    def test_a_plain_declaration_still_demands_one(self):
+        self.write_skill("license: MIT-0")
+        self.assert_fails("declares a license")
+
+    def test_a_double_quoted_key_is_recognised(self):
+        self.write_skill('"license": MIT-0')
+        self.assert_fails("declares a license")
+
+    def test_a_single_quoted_key_is_recognised(self):
+        self.write_skill("'license': MIT-0")
+        self.assert_fails("declares a license")
+
+    def test_a_fence_with_trailing_whitespace_still_counts(self):
+        """Found by probing the parser rather than by the review.
+
+        A first line of `--- ` renders as frontmatter everywhere, but the exact
+        string comparison read it as "no frontmatter", so the declaration below
+        it was never seen. Fail-open, and invisible in the rendered file.
+        """
+        self.write_skill("license: MIT-0")
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text(path.read_text(encoding="utf-8").replace("---\n", "--- \n", 1),
+                            encoding="utf-8")
+        self.assert_fails("declares a license")
+
+    def test_crlf_line_endings_still_count(self):
+        # Same shape: a CRLF file left `---\r` in the comparison and the whole
+        # frontmatter went unread.
+        self.write_skill("license: MIT-0")
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_bytes(path.read_text(encoding="utf-8").replace("\n", "\r\n")
+                             .encode("utf-8"))
+        self.assert_fails("declares a license")
+
+    def test_a_nested_license_key_is_not_the_skill_licence(self):
+        # `metadata:\n  license: ...` is a different field. Reading it as the
+        # skill's licence would demand a LICENSE file nobody promised — the
+        # error is fail-closed, but it is still an error.
+        self.write_skill("metadata:\n  license: MIT-0")
+        self.assert_ok()
+
+    def test_a_declaration_plus_the_file_passes(self):
+        # Positive control: the rule must accept the legitimate combination.
+        self.write_skill("license: MIT-0")
+        for path in (self.repo / SKILL / "LICENSE",
+                     *(self.repo / SKILL / rel / "LICENSE" for rel in COPIES)):
+            path.write_text(LICENCE_TEXT, encoding="utf-8")
+        self.assert_ok()
+
+
 class TestOrdinaryDriftStillCaught(MirrorSkeleton):
     """Guard the checks that existed before, so this change adds without removing."""
 
@@ -240,6 +359,39 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
         proc = self.sync()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue((self.mirror / self.SKILL / "LICENSE").is_file())
+
+    def test_a_body_example_does_not_block_the_sync(self):
+        """The same confusion on the write path, from the other side.
+
+        Measured before the fix: an unlicensed skill carrying a fenced YAML
+        example in its body made the sync exit 2 with nothing wrong. Raised in
+        review of public-skills#1.
+        """
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
+        skill = self.upstream / self.SKILL / "SKILL.md"
+        text = skill.read_text(encoding="utf-8").replace("license: MIT-0\n", "")
+        text += "\nExample only:\n\n```yaml\nlicense: MIT-0\n```\n"
+        skill.write_text(text, encoding="utf-8")
+        (self.upstream / self.SKILL / "LICENSE").unlink()
+        self.commit("unlicensed, but documents frontmatter in its body")
+
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 0,
+                         f"a body example blocked an unlicensed skill\n{proc.stderr}")
+
+    def test_a_quoted_declaration_is_refused_too(self):
+        # `"license": MIT-0` is valid YAML. The old grep matched only the bare
+        # key, so a real declaration without a licence file went through.
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
+        skill = self.upstream / self.SKILL / "SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8")
+                         .replace("license: MIT-0", '"license": MIT-0'), encoding="utf-8")
+        (self.upstream / self.SKILL / "LICENSE").unlink()
+        self.commit("quoted key, no licence file")
+
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 2, "a quoted declaration was not recognised")
+        self.assertIn("refusing to sync", proc.stderr)
 
     def test_a_declaration_without_a_licence_file_is_refused_before_any_write(self):
         self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")

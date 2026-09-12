@@ -36,6 +36,47 @@ resource_dirs="references agents scripts templates"
 
 fail() { echo "FAIL: $*" >&2; status=1; }
 
+# The YAML frontmatter of a SKILL.md: the lines between the opening `---` and
+# the next one. Empty when the file does not start with a fence.
+#
+# Trailing whitespace and CR are stripped before the fence is matched. A first
+# line of `--- ` or a CRLF file would otherwise look like "no frontmatter at
+# all", and a skill declaring a licence would sail past the check — fail-open,
+# and invisible, because the file still renders correctly everywhere else.
+frontmatter() { # $1 = SKILL.md
+  [ -f "$1" ] || return 0
+  awk '
+    { sub(/\r$/, "") }
+    NR == 1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    { print }
+  ' "$1"
+}
+
+# Does this skill declare a licence? Read from the frontmatter alone, and only
+# at its top level.
+#
+# Both checks used to grep the whole file, so a fenced YAML example in the body
+# — the kind a skill writes to explain frontmatter — made an unlicensed skill
+# look licensed and blocked its sync. The reverse was open too: a quoted key
+# (`"license": MIT-0`) is valid YAML and was not recognised at all.
+#
+# The anchor is deliberate: an indented `license:` nested under another key
+# (`metadata:` say) is a different field with a different meaning, and reading
+# it as the skill's licence would demand a LICENSE file nobody promised.
+declares_license() { # $1 = SKILL.md
+  frontmatter "$1" |
+    grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*[^[:space:]]'
+}
+
+# Every entry directly inside a directory, one per line, including dotfiles and
+# broken symlinks. `for e in "$d"/*` misses both: the glob skips names starting
+# with a dot, and `[ -e ]` is false for a symlink whose target is gone.
+entries_in() { # $1 = directory
+  [ -d "$1" ] || return 0
+  ( cd "$1" && find . -mindepth 1 -maxdepth 1 -print | sed 's|^\./||' )
+}
+
 # Skills recorded in upstream.lock, one per line.
 locked_skills() {
   if [ -f "$lock" ]; then awk 'NF && $1 !~ /^#/ { print $1 }' "$lock"; fi
@@ -55,9 +96,8 @@ check_self() {
     fi
     # A declared licence with no licence text is a claim the artefact does not
     # carry. Checked at the skill root; the copies inherit it through the diff.
-    if grep -q '^license:[[:space:]]*[^[:space:]]' "$repo_root/$s/SKILL.md" 2>/dev/null &&
-       [ ! -f "$repo_root/$s/LICENSE" ]; then
-      fail "$s: SKILL.md declares a license but $s/LICENSE is missing"
+    if declares_license "$repo_root/$s/SKILL.md" && [ ! -f "$repo_root/$s/LICENSE" ]; then
+      fail "$s: SKILL.md frontmatter declares a license but $s/LICENSE is missing"
     fi
     for copy in "$repo_root/$s/.claude/skills/$s" "$repo_root/$s/.agents/skills/$s"; do
       [ -d "$copy" ] || continue
@@ -72,14 +112,30 @@ check_self() {
       done
       # Nothing in a copy that the skill root does not account for. Without
       # this, the loop above only ever looks at names it already knows.
-      for entry in "$copy"/*; do
-        [ -e "$entry" ] || continue
-        base=${entry##*/}
-        case " SKILL.md $resource_files $resource_dirs " in
-          *" $base "*) continue ;;
-        esac
-        fail "$s: ${copy#"$repo_root"/}/$base is not part of the skill root"
-      done
+      #
+      # Read from a real listing, not a glob: dotfiles and broken symlinks used
+      # to slip through both, because `*` skips names beginning with a dot and
+      # `[ -e ]` is false for a symlink whose target is gone. Compared name by
+      # name rather than as a substring of a joined string, which had accepted
+      # a file literally called "LICENSE references".
+      stray=$(entries_in "$copy" | while IFS= read -r base; do
+        [ -n "$base" ] || continue
+        known=no
+        for allowed in SKILL.md $resource_files $resource_dirs; do
+          if [ "$base" = "$allowed" ]; then known=yes; break; fi
+        done
+        if [ "$known" = no ]; then printf '%s\n' "$base"; fi
+      done)
+      # Reported out here, in the current shell, so `fail` reaches `status`.
+      # A `fail` inside the pipeline above would run in a subshell and its
+      # exit code would be thrown away — the classic way a gate reports a
+      # problem and still ends green.
+      if [ -n "$stray" ]; then
+        printf '%s\n' "$stray" | while IFS= read -r base; do
+          echo "FAIL: $s: ${copy#"$repo_root"/}/$base is not part of the skill root" >&2
+        done
+        status=1
+      fi
     done
   done
   for s in $(locked_skills); do
@@ -124,8 +180,8 @@ sync() { # $1 = upstream checkout, rest = skills
       echo "upstream checkout is dirty under $s — commit or stash first; the lock must name a real commit" >&2
       exit 2
     fi
-    if grep -q '^license:[[:space:]]*[^[:space:]]' "$up/$s/SKILL.md" && [ ! -f "$up/$s/LICENSE" ]; then
-      echo "refusing to sync $s: its SKILL.md declares a license but $up/$s/LICENSE is missing — nothing was written" >&2
+    if declares_license "$up/$s/SKILL.md" && [ ! -f "$up/$s/LICENSE" ]; then
+      echo "refusing to sync $s: its SKILL.md frontmatter declares a license but $up/$s/LICENSE is missing — nothing was written" >&2
       exit 2
     fi
   done
