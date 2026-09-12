@@ -393,20 +393,87 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, "a quoted declaration was not recognised")
         self.assertIn("refusing to sync", proc.stderr)
 
+    def mirror_state(self):
+        """Every file under the mirror, with contents and the lock file.
+
+        The earlier version of the test below compared one file — the licence —
+        and called that "nothing was written". A refused sync must leave the
+        whole tree alone, so the whole tree is what gets compared.
+        """
+        state = {}
+        for path in sorted(self.mirror.rglob("*")):
+            if path.is_file():
+                state[str(path.relative_to(self.mirror))] = path.read_bytes()
+        return state
+
+    def assert_refused_without_touching(self, before, code=2):
+        proc = self.sync()
+        self.assertEqual(proc.returncode, code, f"the sync must refuse\n{proc.stderr}")
+        self.assertNotIn("synced", proc.stdout, "it wrote despite refusing")
+        after = self.mirror_state()
+        self.assertEqual(after, before, "the refused sync changed files")
+        return proc
+
     def test_a_declaration_without_a_licence_file_is_refused_before_any_write(self):
         self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
-        mirrored = self.mirror / self.SKILL / "LICENSE"
-        before = mirrored.read_bytes()
+        before = self.mirror_state()
 
         (self.upstream / self.SKILL / "LICENSE").unlink()
         self.commit("licence removed upstream, declaration left behind")
 
-        proc = self.sync()
-        self.assertEqual(proc.returncode, 2, "the sync must refuse, not copy")
+        proc = self.assert_refused_without_touching(before)
         self.assertIn("refusing to sync", proc.stderr)
-        self.assertNotIn("synced", proc.stdout)
-        self.assertTrue(mirrored.is_file(), "the mirrored licence was deleted anyway")
-        self.assertEqual(mirrored.read_bytes(), before)
+
+    def test_no_refusal_path_writes_anything(self):
+        """Every way the sync can abort must leave the mirror untouched.
+
+        Senox asked for "abgewiesener Sync → keine Dateien verändert" as a
+        general rule, not only for the licence case. Each branch below aborts
+        for a different reason; all of them are checked against the full tree.
+        """
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
+        before = self.mirror_state()
+
+        with self.subTest(reason="declared licence without the file"):
+            (self.upstream / self.SKILL / "LICENSE").unlink()
+            self.commit("licence gone")
+            self.assert_refused_without_touching(before)
+            (self.upstream / self.SKILL / "LICENSE").write_text(LICENCE_TEXT, encoding="utf-8")
+            self.commit("licence back")
+
+        with self.subTest(reason="dirty upstream checkout"):
+            (self.upstream / self.SKILL / "SKILL.md").write_text(
+                self.SKILL_MD + "\nuncommitted\n", encoding="utf-8")
+            self.assert_refused_without_touching(before)
+            self.commit("tidy up")
+
+        with self.subTest(reason="named skill missing upstream"):
+            proc = subprocess.run(
+                ["sh", str(self.mirror / "scripts" / "sync-from-upstream.sh"),
+                 str(self.upstream), "no-such-skill"],
+                capture_output=True, text=True, cwd=str(self.mirror))
+            self.assertEqual(proc.returncode, 2)
+            self.assertEqual(self.mirror_state(), before)
+
+        with self.subTest(reason="upstream is not a git checkout"):
+            plain = self.tmp / "plain"
+            (plain / self.SKILL).mkdir(parents=True)
+            (plain / self.SKILL / "SKILL.md").write_text(self.SKILL_MD, encoding="utf-8")
+            proc = subprocess.run(
+                ["sh", str(self.mirror / "scripts" / "sync-from-upstream.sh"),
+                 str(plain), self.SKILL],
+                capture_output=True, text=True, cwd=str(self.mirror))
+            self.assertEqual(proc.returncode, 2)
+            self.assertEqual(self.mirror_state(), before)
+
+    def test_an_accepted_sync_does_write(self):
+        # Positive control for the rule above: a gate that refuses everything
+        # would satisfy every subTest and never mirror anything.
+        before = self.mirror_state()
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("synced", proc.stdout)
+        self.assertNotEqual(self.mirror_state(), before, "a clean sync wrote nothing")
 
 
 class TestThisRepositoryIsInSync(unittest.TestCase):
