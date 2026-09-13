@@ -53,28 +53,87 @@ frontmatter() { # $1 = SKILL.md
   ' "$1"
 }
 
-# Does this skill declare a licence? Read from the frontmatter alone, and only
-# at its top level.
+# Licence status of a skill, read from its frontmatter alone.
 #
-# Both checks used to grep the whole file, so a fenced YAML example in the body
-# — the kind a skill writes to explain frontmatter — made an unlicensed skill
-# look licensed and blocked its sync. The reverse was open too: a quoted key
-# (`"license": MIT-0`) is valid YAML and was not recognised at all.
+#   0 = declares a licence
+#   1 = declares none
+#   2 = the frontmatter uses a shape this script cannot read with confidence
 #
-# The anchor is deliberate: an indented `license:` nested under another key
-# (`metadata:` say) is a different field with a different meaning, and reading
-# it as the skill's licence would demand a LICENSE file nobody promised.
-declares_license() { # $1 = SKILL.md
-  frontmatter "$1" |
-    grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*[^[:space:]]'
+# The third answer is the point. An earlier version knew only yes and no, and
+# answered "no" to every syntax it did not match — so `license:` with the value
+# on the next line, an indented root map, or a flow map `{name: x, license: y}`
+# all counted as unlicensed, and a skill declaring MIT-0 without shipping the
+# text sailed through the preflight. All three are valid YAML and a real parser
+# reads MIT-0 from each.
+#
+# This is POSIX sh with no YAML parser available, so instead of guessing, the
+# unreadable shapes are named and refused. Fail-closed beats a wrong "no".
+license_status() { # $1 = SKILL.md
+  fm=$(frontmatter "$1")
+  [ -n "$fm" ] || return 1
+
+  # A flow map holds the whole mapping on one line; the line-oriented checks
+  # below cannot see into it.
+  if printf '%s\n' "$fm" | grep -Eq '^[[:space:]]*\{'; then return 2; fi
+  # An indented first key means the whole root map is nested one level in, and
+  # every anchor below would miss it.
+  if printf '%s\n' "$fm" | grep -Eq '^[[:space:]]+[^[:space:]#-]' &&
+     ! printf '%s\n' "$fm" | grep -Eq '^[^[:space:]#]'; then return 2; fi
+  # `license:` with nothing after it: the value is on a following line, or the
+  # key is empty. Both are readable by YAML and not by this grep.
+  if printf '%s\n' "$fm" |
+       grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*$'; then
+    return 2
+  fi
+  if printf '%s\n' "$fm" |
+       grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*[^[:space:]]'; then
+    return 0
+  fi
+  return 1
 }
 
-# Every entry directly inside a directory, one per line, including dotfiles and
-# broken symlinks. `for e in "$d"/*` misses both: the glob skips names starting
-# with a dot, and `[ -e ]` is false for a symlink whose target is gone.
-entries_in() { # $1 = directory
-  [ -d "$1" ] || return 0
-  ( cd "$1" && find . -mindepth 1 -maxdepth 1 -print | sed 's|^\./||' )
+# True when the skill declares a licence. Callers must handle status 2 (an
+# unreadable frontmatter) separately — treating it as "no licence" is exactly
+# the bug this replaced.
+declares_license() { # $1 = SKILL.md
+  license_status "$1"
+  [ "$?" -eq 0 ]
+}
+
+unreadable_frontmatter() { # $1 = SKILL.md
+  license_status "$1"
+  [ "$?" -eq 2 ]
+}
+
+# How many entries directly inside $1 are NOT one of the allowed names, and a
+# printable listing of them.
+#
+# Counted by find itself rather than by reading its output line by line. A
+# newline is a legal character in a POSIX filename, and a single file called
+# "LICENSE<LF>references" arrived at a `while read` loop as two records, both
+# of them allowed names — so one forbidden entry read as two permitted ones and
+# the gate said "mirror ok". The previous glob caught that case; the line-based
+# rewrite lost it. Counting never splits.
+stray_count() { # $1 = directory, rest: allowed names
+  dir=$1; shift
+  [ -d "$dir" ] || { echo 0; return 0; }
+  set -- "$@"
+  exclude=""
+  for allowed in "$@"; do
+    exclude="$exclude ! -name $allowed"
+  done
+  # shellcheck disable=SC2086 — the expansion is the point: one -name per word.
+  find "$dir" -mindepth 1 -maxdepth 1 $exclude -exec printf 'x\n' \; | wc -l | tr -d ' '
+}
+
+stray_listing() { # $1 = directory, rest: allowed names — for the message only
+  dir=$1; shift
+  exclude=""
+  for allowed in "$@"; do
+    exclude="$exclude ! -name $allowed"
+  done
+  # shellcheck disable=SC2086
+  find "$dir" -mindepth 1 -maxdepth 1 $exclude -print0 | tr '\0' '\n'
 }
 
 # Skills recorded in upstream.lock, one per line.
@@ -96,45 +155,35 @@ check_self() {
     fi
     # A declared licence with no licence text is a claim the artefact does not
     # carry. Checked at the skill root; the copies inherit it through the diff.
-    if declares_license "$repo_root/$s/SKILL.md" && [ ! -f "$repo_root/$s/LICENSE" ]; then
+    if unreadable_frontmatter "$repo_root/$s/SKILL.md"; then
+      fail "$s: SKILL.md frontmatter uses a YAML shape this script cannot read (flow map, indented root map, or a key whose value is on the next line) — its licence status is undecidable, so it is refused rather than assumed unlicensed"
+    elif declares_license "$repo_root/$s/SKILL.md" && [ ! -f "$repo_root/$s/LICENSE" ]; then
       fail "$s: SKILL.md frontmatter declares a license but $s/LICENSE is missing"
     fi
     for copy in "$repo_root/$s/.claude/skills/$s" "$repo_root/$s/.agents/skills/$s"; do
       [ -d "$copy" ] || continue
       for part in SKILL.md $resource_files $resource_dirs; do
-        if [ -e "$repo_root/$s/$part" ]; then
+        # `-e` alone is false for a symlink whose target is gone, so a dangling
+        # link carrying an allowed name used to be invisible in both branches:
+        # the source had no counterpart, and the copy "did not exist" either.
+        # It is an entry, and it does not belong there.
+        if [ -e "$repo_root/$s/$part" ] || [ -L "$repo_root/$s/$part" ]; then
           if ! diff -r -x __pycache__ "$repo_root/$s/$part" "$copy/$part" >/dev/null 2>&1; then
             fail "$s: ${copy#"$repo_root"/}/$part differs from the skill root"
           fi
-        elif [ -e "$copy/$part" ]; then
+        elif [ -e "$copy/$part" ] || [ -L "$copy/$part" ]; then
           fail "$s: ${copy#"$repo_root"/}/$part has no counterpart in the skill root"
         fi
       done
       # Nothing in a copy that the skill root does not account for. Without
       # this, the loop above only ever looks at names it already knows.
       #
-      # Read from a real listing, not a glob: dotfiles and broken symlinks used
-      # to slip through both, because `*` skips names beginning with a dot and
-      # `[ -e ]` is false for a symlink whose target is gone. Compared name by
-      # name rather than as a substring of a joined string, which had accepted
-      # a file literally called "LICENSE references".
-      stray=$(entries_in "$copy" | while IFS= read -r base; do
-        [ -n "$base" ] || continue
-        known=no
-        for allowed in SKILL.md $resource_files $resource_dirs; do
-          if [ "$base" = "$allowed" ]; then known=yes; break; fi
-        done
-        if [ "$known" = no ]; then printf '%s\n' "$base"; fi
-      done)
-      # Reported out here, in the current shell, so `fail` reaches `status`.
-      # A `fail` inside the pipeline above would run in a subshell and its
-      # exit code would be thrown away — the classic way a gate reports a
-      # problem and still ends green.
-      if [ -n "$stray" ]; then
-        printf '%s\n' "$stray" | while IFS= read -r base; do
-          echo "FAIL: $s: ${copy#"$repo_root"/}/$base is not part of the skill root" >&2
-        done
-        status=1
+      # Counted by find, never read line by line: a newline inside a filename
+      # would otherwise split one forbidden entry into two allowed names.
+      n_stray=$(stray_count "$copy" SKILL.md $resource_files $resource_dirs)
+      if [ "$n_stray" -gt 0 ]; then
+        fail "$s: ${copy#"$repo_root"/} holds $n_stray entr$([ "$n_stray" = 1 ] && echo y || echo ies) not part of the skill root:"
+        stray_listing "$copy" SKILL.md $resource_files $resource_dirs | sed 's/^/         /' >&2
       fi
     done
   done
@@ -178,6 +227,10 @@ sync() { # $1 = upstream checkout, rest = skills
     if [ ! -f "$up/$s/SKILL.md" ]; then echo "no skill at $up/$s" >&2; exit 2; fi
     if [ -n "$(git -C "$up" status --porcelain -- "$s")" ]; then
       echo "upstream checkout is dirty under $s — commit or stash first; the lock must name a real commit" >&2
+      exit 2
+    fi
+    if unreadable_frontmatter "$up/$s/SKILL.md"; then
+      echo "refusing to sync $s: its SKILL.md frontmatter uses a YAML shape this script cannot read (flow map, indented root map, or a key whose value is on the next line). The licence status is undecidable and assuming 'unlicensed' would mirror a skill whose terms nobody checked — nothing was written" >&2
       exit 2
     fi
     if declares_license "$up/$s/SKILL.md" && [ ! -f "$up/$s/LICENSE" ]; then

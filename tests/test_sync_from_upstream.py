@@ -202,6 +202,29 @@ class TestTheInventoryIsReal(MirrorSkeleton):
         (self.copy_path() / "LICENSE references").write_text("synthetic\n", encoding="utf-8")
         self.assert_fails("not part of the skill root")
 
+    def test_a_newline_in_a_filename_is_not_two_allowed_names(self):
+        """A regression I introduced, caught in the second mirror review.
+
+        A newline is a legal character in a POSIX filename. The glob this gate
+        started with saw "LICENSE\\nreferences" as one entry and rejected it.
+        Replacing the glob with `find -print | while read` split that single
+        file into two records — `LICENSE` and `references` — both of them
+        allowed names, and the gate said `mirror ok`. Counting with find itself
+        never splits.
+        """
+        (self.copy_path() / "LICENSE\nreferences").write_text("synthetic\n", encoding="utf-8")
+        self.assert_fails("not part of the skill root")
+
+    def test_a_dangling_symlink_with_an_allowed_name_is_drift(self):
+        # `templates` is an allowed name, so the inventory waved it through,
+        # and the counterpart check used `-e`, which is false for a link whose
+        # target is gone. Neither half saw it. It is still an entry that the
+        # skill root does not have.
+        self.assertFalse((self.repo / SKILL / "templates").exists(),
+                         "precondition: the skill root has no templates/")
+        (self.copy_path() / "templates").symlink_to("missing-synthetic-target")
+        self.assert_fails("counterpart")
+
     def test_the_untouched_copies_still_pass(self):
         # Positive control for the four above: an inventory rule that rejects
         # everything would satisfy them all and break the repository.
@@ -276,6 +299,49 @@ class TestLicenceComesFromTheFrontmatter(MirrorSkeleton):
         # skill's licence would demand a LICENSE file nobody promised — the
         # error is fail-closed, but it is still an error.
         self.write_skill("metadata:\n  license: MIT-0")
+        self.assert_ok()
+
+    def test_a_value_on_the_next_line_is_refused_not_ignored(self):
+        """Valid YAML this script cannot read must be refused, never assumed.
+
+        `license:` with MIT-0 on the following line is a real declaration — a
+        YAML parser reads it as such. The line-oriented check saw no value on
+        the key's line and answered "no licence", so a skill declaring MIT-0
+        without shipping the text passed the preflight. Raised in the second
+        mirror review; the answer is a third state, not a wider regex.
+        """
+        self.write_skill("license:\n  MIT-0")
+        self.assert_fails("cannot read")
+
+    def test_a_flow_map_is_refused_not_ignored(self):
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text("---\n{name: demo-skill, description: fixture, license: MIT-0}\n"
+                            "---\n\n# demo-skill\n", encoding="utf-8")
+        self.assert_fails("cannot read")
+
+    def test_an_indented_root_map_is_refused_not_ignored(self):
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text("---\n  name: demo-skill\n  description: fixture\n"
+                            "  license: MIT-0\n---\n\n# demo-skill\n", encoding="utf-8")
+        self.assert_fails("cannot read")
+
+    def test_a_block_scalar_description_is_still_readable(self):
+        """The shape the real mirrored skill uses must not become undecidable.
+
+        Positive control for the three refusals above: a rule that called every
+        multi-line frontmatter unreadable would satisfy them all and refuse the
+        skill this repository actually publishes.
+        """
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text("---\nname: demo-skill\ndescription: >-\n  A fixture that spans\n"
+                            "  two lines.\nlicense: MIT-0\n---\n\n# demo-skill\n",
+                            encoding="utf-8")
+        for path in (self.repo / SKILL / "LICENSE",
+                     *(self.repo / SKILL / rel / "LICENSE" for rel in COPIES)):
+            path.write_text(LICENCE_TEXT, encoding="utf-8")
         self.assert_ok()
 
     def test_a_declaration_plus_the_file_passes(self):
