@@ -72,24 +72,63 @@ license_status() { # $1 = SKILL.md
   fm=$(frontmatter "$1")
   [ -n "$fm" ] || return 1
 
-  # A flow map holds the whole mapping on one line; the line-oriented checks
-  # below cannot see into it.
-  if printf '%s\n' "$fm" | grep -Eq '^[[:space:]]*\{'; then return 2; fi
-  # An indented first key means the whole root map is nested one level in, and
-  # every anchor below would miss it.
-  if printf '%s\n' "$fm" | grep -Eq '^[[:space:]]+[^[:space:]#-]' &&
-     ! printf '%s\n' "$fm" | grep -Eq '^[^[:space:]#]'; then return 2; fi
-  # `license:` with nothing after it: the value is on a following line, or the
-  # key is empty. Both are readable by YAML and not by this grep.
-  if printf '%s\n' "$fm" |
-       grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*$'; then
-    return 2
-  fi
-  if printf '%s\n' "$fm" |
-       grep -Eq '^("license"|'"'"'license'"'"'|license)[[:space:]]*:[[:space:]]*[^[:space:]]'; then
-    return 0
-  fi
-  return 1
+  # Every line is matched against the supported grammar. Anything outside it
+  # makes the whole frontmatter undecidable — a whitelist, not a list of
+  # forbidden shapes.
+  #
+  # The earlier version named three bad forms and let everything else fall
+  # through to "no licence". That is unbounded by construction: `? license`
+  # with its value on the next line, and a key written with a unicode escape,
+  # both declare MIT-0 and both slipped past. Adding a fourth and fifth pattern
+  # would not have changed the shape of the problem, only its size.
+  #
+  # Supported: blank lines, comments, and top-level `key: value` where the key
+  # is a plain word or a quoted word without escapes. A `|` or `>` value opens
+  # a block scalar whose indented body is content, not structure — that is what
+  # keeps a JSON snippet inside `description: |` from reading as a flow map.
+  verdict=$(printf '%s\n' "$fm" | awk '
+    BEGIN { inblock = 0; found = 0 }
+    function bail() { print "UNREADABLE"; exit }
+    # Inside a block scalar: indented lines and blank lines are its content.
+    inblock && ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]/) { next }
+    { inblock = 0 }
+    $0 ~ /^[[:space:]]*$/ { next }
+    $0 ~ /^#/ { next }
+    # An indented line outside a block scalar means nesting this parser does
+    # not model — an indented root map, a nested mapping, a sequence item.
+    $0 ~ /^[[:space:]]/ { bail() }
+    {
+      line = $0
+      # key: either a plain word, or a quoted word containing no backslash.
+      if (match(line, /^[A-Za-z_][A-Za-z0-9_.-]*[[:space:]]*:/)) {
+        key = substr(line, 1, RLENGTH - 1)
+        rest = substr(line, RLENGTH + 1)
+      } else if (match(line, /^"[^"\\]*"[[:space:]]*:/) || match(line, /^'"'"'[^'"'"'\\]*'"'"'[[:space:]]*:/)) {
+        key = substr(line, 2, RLENGTH - 3)
+        sub(/[[:space:]]*$/, "", key)
+        sub(/["'"'"']$/, "", key)
+        rest = substr(line, RLENGTH + 1)
+      } else {
+        bail()          # `? license`, a flow map, an escape, an alias, a tag
+      }
+      sub(/^[[:space:]]*:?[[:space:]]*/, "", key)
+      sub(/[[:space:]]*$/, "", key)
+      sub(/^[[:space:]]+/, "", rest)
+      sub(/[[:space:]]+$/, "", rest)
+      if (rest ~ /^[|>][0-9+-]*$/) { inblock = 1; next }
+      if (rest == "") { bail() }   # value on a following line: nesting again
+      if (rest ~ /^[{[]/) { bail() }  # inline flow collection
+      if (key == "license") { found = 1 }
+      next
+    }
+    END { print found ? "DECLARED" : "NONE" }
+  ')
+
+  case "$verdict" in
+    DECLARED) return 0 ;;
+    NONE)     return 1 ;;
+    *)        return 2 ;;
+  esac
 }
 
 # True when the skill declares a licence. Callers must handle status 2 (an
@@ -156,13 +195,39 @@ check_self() {
     # A declared licence with no licence text is a claim the artefact does not
     # carry. Checked at the skill root; the copies inherit it through the diff.
     if unreadable_frontmatter "$repo_root/$s/SKILL.md"; then
-      fail "$s: SKILL.md frontmatter uses a YAML shape this script cannot read (flow map, indented root map, or a key whose value is on the next line) — its licence status is undecidable, so it is refused rather than assumed unlicensed"
+      fail "$s: SKILL.md frontmatter uses a YAML shape this script cannot read (supported: blank lines, comments, and top-level 'key: value' with a plain or simply-quoted key; a '|' or '>' value opens a block scalar) — its licence status is undecidable, so it is refused rather than assumed unlicensed"
     elif declares_license "$repo_root/$s/SKILL.md" && [ ! -f "$repo_root/$s/LICENSE" ]; then
       fail "$s: SKILL.md frontmatter declares a license but $s/LICENSE is missing"
     fi
     for copy in "$repo_root/$s/.claude/skills/$s" "$repo_root/$s/.agents/skills/$s"; do
+      # A symlinked installation copy is refused outright. The content
+      # comparisons follow such a link, but `find` does not follow one given as
+      # its starting argument, so the inventory walked zero children while the
+      # diffs walked the target: extra files behind the link went unseen. One
+      # policy, stated here, instead of two halves that disagree.
+      if [ -L "$copy" ]; then
+        fail "$s: ${copy#"$repo_root"/} is a symlink — an installed copy must be a real directory, or the inventory and the content checks look at different things"
+        continue
+      fi
       [ -d "$copy" ] || continue
       for part in SKILL.md $resource_files $resource_dirs; do
+        # `diff -r file dir` silently compares the file against dir/file, so a
+        # LICENSE *directory* holding a LICENSE file read as identical while
+        # carrying arbitrary extra payload beside it. The type has to match
+        # before the contents are worth comparing.
+        src="$repo_root/$s/$part"
+        dst="$copy/$part"
+        if [ -e "$src" ] && [ -e "$dst" ]; then
+          if { [ -f "$src" ] && [ ! -f "$dst" ]; } || { [ -d "$src" ] && [ ! -d "$dst" ]; }; then
+            fail "$s: ${copy#"$repo_root"/}/$part has the wrong type — the skill root has a $([ -d "$src" ] && echo directory || echo file)"
+            continue
+          fi
+        fi
+        if { [ -L "$src" ] && [ ! -L "$dst" ] && [ -e "$dst" ]; } ||
+           { [ -L "$dst" ] && [ ! -L "$src" ] && [ -e "$src" ]; }; then
+          fail "$s: ${copy#"$repo_root"/}/$part is a symlink on one side only"
+          continue
+        fi
         # `-e` alone is false for a symlink whose target is gone, so a dangling
         # link carrying an allowed name used to be invisible in both branches:
         # the source had no counterpart, and the copy "did not exist" either.
@@ -230,7 +295,7 @@ sync() { # $1 = upstream checkout, rest = skills
       exit 2
     fi
     if unreadable_frontmatter "$up/$s/SKILL.md"; then
-      echo "refusing to sync $s: its SKILL.md frontmatter uses a YAML shape this script cannot read (flow map, indented root map, or a key whose value is on the next line). The licence status is undecidable and assuming 'unlicensed' would mirror a skill whose terms nobody checked — nothing was written" >&2
+      echo "refusing to sync $s: its SKILL.md frontmatter uses a YAML shape this script cannot read (supported: blank lines, comments, and top-level 'key: value' with a plain or simply-quoted key; a '|' or '>' value opens a block scalar). The licence status is undecidable and assuming 'unlicensed' would mirror a skill whose terms nobody checked — nothing was written" >&2
       exit 2
     fi
     if declares_license "$up/$s/SKILL.md" && [ ! -f "$up/$s/LICENSE" ]; then

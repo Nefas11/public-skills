@@ -215,6 +215,44 @@ class TestTheInventoryIsReal(MirrorSkeleton):
         (self.copy_path() / "LICENSE\nreferences").write_text("synthetic\n", encoding="utf-8")
         self.assert_fails("not part of the skill root")
 
+    def test_a_license_directory_is_not_a_license_file(self):
+        """`diff -r file dir` compares the file against dir/file.
+
+        Replacing the installed LICENSE with a directory holding a LICENSE of
+        the same content read as identical, and whatever else sat beside it in
+        that directory rode along. The entry type is checked before the
+        contents are worth comparing. Raised in the third mirror review.
+        """
+        licence = self.copy_path() / "LICENSE"
+        contents = licence.read_bytes()
+        licence.unlink()
+        licence.mkdir()
+        (licence / "LICENSE").write_bytes(contents)
+        (licence / "UNRELATED.txt").write_text("synthetic payload\n", encoding="utf-8")
+        self.assert_fails("wrong type")
+
+    def test_a_symlinked_copy_is_refused(self):
+        """The inventory and the content checks disagreed about symlinks.
+
+        `diff` follows a symlinked copy directory; `find` does not follow one
+        passed as its starting path, so the inventory saw zero children while
+        the diffs walked the target. Extra files behind the link were invisible.
+        One policy now: an installed copy must be a real directory.
+        """
+        original = self.copy_path()
+        target = original.parent / ".copy-content"
+        original.rename(target)
+        original.symlink_to(".copy-content", target_is_directory=True)
+        self.assert_fails("symlink")
+
+    def test_a_symlinked_copy_is_refused_even_with_extra_content(self):
+        original = self.copy_path()
+        target = original.parent / ".copy-content"
+        original.rename(target)
+        original.symlink_to(".copy-content", target_is_directory=True)
+        (target / "unexpected.md").write_text("synthetic payload\n", encoding="utf-8")
+        self.assert_fails("symlink")
+
     def test_a_dangling_symlink_with_an_allowed_name_is_drift(self):
         # `templates` is an allowed name, so the inventory waved it through,
         # and the counterpart check used `-e`, which is false for a link whose
@@ -294,12 +332,14 @@ class TestLicenceComesFromTheFrontmatter(MirrorSkeleton):
                              .encode("utf-8"))
         self.assert_fails("declares a license")
 
-    def test_a_nested_license_key_is_not_the_skill_licence(self):
-        # `metadata:\n  license: ...` is a different field. Reading it as the
-        # skill's licence would demand a LICENSE file nobody promised — the
-        # error is fail-closed, but it is still an error.
+    def test_a_nested_map_is_undecidable(self):
+        # `metadata:` with an indented block under it is nesting this parser
+        # does not model. An earlier version answered "not the skill's licence"
+        # and let it through, which was a guess: the same shape could carry a
+        # top-level licence one line further down. Under the whitelist the
+        # honest answer is "cannot read", and the message says what to change.
         self.write_skill("metadata:\n  license: MIT-0")
-        self.assert_ok()
+        self.assert_fails("cannot read")
 
     def test_a_value_on_the_next_line_is_refused_not_ignored(self):
         """Valid YAML this script cannot read must be refused, never assumed.
@@ -342,6 +382,44 @@ class TestLicenceComesFromTheFrontmatter(MirrorSkeleton):
         for path in (self.repo / SKILL / "LICENSE",
                      *(self.repo / SKILL / rel / "LICENSE" for rel in COPIES)):
             path.write_text(LICENCE_TEXT, encoding="utf-8")
+        self.assert_ok()
+
+    def test_an_explicit_key_is_refused_not_ignored(self):
+        """`? license` / `: MIT-0` is a real declaration YAML reads as MIT-0.
+
+        The previous version named three bad shapes and let everything else
+        fall through to "no licence" — unbounded by construction. The parser
+        now validates a whitelist: anything outside the supported grammar is
+        undecidable. Raised in the third mirror review.
+        """
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text("---\nname: demo-skill\ndescription: fixture\n"
+                            "? license\n: MIT-0\n---\n\n# demo-skill\n", encoding="utf-8")
+        self.assert_fails("cannot read")
+
+    def test_an_escaped_key_is_refused_not_ignored(self):
+        # `"license"` spells license. A quoted key containing a backslash
+        # is outside the grammar and therefore undecidable, rather than "not a
+        # licence key".
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text('---\nname: demo-skill\n"\\u006cicense": MIT-0\n'
+                            "---\n\n# demo-skill\n", encoding="utf-8")
+        self.assert_fails("cannot read")
+
+    def test_json_inside_a_block_scalar_is_content_not_structure(self):
+        """A false rejection I introduced, caught in the same review.
+
+        `description: |` opens a block scalar; its indented body is a string.
+        Matching `{` across every frontmatter line turned a JSON snippet in a
+        description into an "indented root map" and refused a perfectly valid
+        unlicensed skill. The parser now tracks block-scalar context.
+        """
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text('---\nname: demo-skill\ndescription: |\n'
+                            '  {"mode": "read-only"}\n---\n\n# demo-skill\n', encoding="utf-8")
         self.assert_ok()
 
     def test_a_declaration_plus_the_file_passes(self):
@@ -479,6 +557,58 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
         after = self.mirror_state()
         self.assertEqual(after, before, "the refused sync changed files")
         return proc
+
+    def test_undecidable_frontmatter_is_refused_before_any_write(self):
+        """The sync-side guard, exercised directly.
+
+        Senox measured the gap: removing `unreadable_frontmatter` from the sync
+        preflight left every test green, because only the check path was
+        covered. Each shape below is a real declaration or a shape the parser
+        cannot read, and each must stop the sync with the mirror untouched.
+        """
+        shapes = {
+            "value on the next line": "name: demo-skill\nlicense:\n  MIT-0\n",
+            "explicit key": "name: demo-skill\n? license\n: MIT-0\n",
+            "escaped key": 'name: demo-skill\n"\\u006cicense": MIT-0\n',
+            "flow map": "{name: demo-skill, license: MIT-0}\n",
+            "indented root map": "  name: demo-skill\n  license: MIT-0\n",
+        }
+        for label, frontmatter in shapes.items():
+            with self.subTest(shape=label):
+                self.assertEqual(self.sync().returncode, 0, "precondition: a clean sync")
+                before = self.mirror_state()
+                root = self.upstream / self.SKILL
+                (root / "SKILL.md").write_text(f"---\n{frontmatter}---\n\n# demo-skill\n",
+                                               encoding="utf-8")
+                (root / "LICENSE").unlink()
+                self.commit(f"synthetic: {label}")
+
+                proc = self.sync()
+                self.assertEqual(proc.returncode, 2, f"{label} did not stop the sync")
+                self.assertIn("cannot read", proc.stderr)
+                self.assertEqual(self.mirror_state(), before, f"{label} changed the mirror")
+                self.assertTrue((self.mirror / self.SKILL / "LICENSE").is_file(),
+                                f"{label} deleted the mirrored licence")
+
+                # Restore for the next shape.
+                (root / "SKILL.md").write_text(self.SKILL_MD, encoding="utf-8")
+                (root / "LICENSE").write_text(LICENCE_TEXT, encoding="utf-8")
+                self.commit(f"restore after {label}")
+
+    def test_a_supported_unlicensed_skill_still_syncs(self):
+        # Positive control for the five refusals above: a parser that called
+        # everything undecidable would satisfy them all and mirror nothing.
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean sync")
+        root = self.upstream / self.SKILL
+        (root / "SKILL.md").write_text(
+            '---\nname: demo-skill\ndescription: |\n  {"mode": "read-only"}\n'
+            "---\n\n# demo-skill\n", encoding="utf-8")
+        (root / "LICENSE").unlink()
+        self.commit("unlicensed, JSON inside a block scalar")
+
+        proc = self.sync()
+        self.assertEqual(proc.returncode, 0,
+                         f"a valid unlicensed skill was refused\n{proc.stderr}")
 
     def test_a_declaration_without_a_licence_file_is_refused_before_any_write(self):
         self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
