@@ -678,6 +678,59 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
         self.assertEqual(proc.returncode, 0,
                          f"a valid unlicensed skill was refused\n{proc.stderr}")
 
+    def check_against_upstream(self):
+        return subprocess.run(
+            ["sh", str(self.mirror / "scripts" / "sync-from-upstream.sh"),
+             "--check", str(self.upstream)],
+            capture_output=True, text=True, cwd=str(self.mirror))
+
+    def test_check_against_upstream_catches_a_missing_skill(self):
+        """The `--check <upstream>` path had no test at all.
+
+        Found by disabling each guard in the script in turn and looking for one
+        whose removal left the suite green. Three did, and two of them were this
+        whole branch. A comparison nobody exercises is one nobody can trust.
+        """
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean sync")
+        self.assertEqual(self.check_against_upstream().returncode, 0, "precondition: in sync")
+
+        shutil.rmtree(self.upstream / self.SKILL)
+        self.commit("skill removed upstream")
+        proc = self.check_against_upstream()
+        self.assertEqual(proc.returncode, 1, "a skill missing upstream went unnoticed")
+        self.assertIn("does not exist in the upstream checkout", proc.stderr)
+
+    def test_check_against_upstream_catches_drift(self):
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean sync")
+        self.assertEqual(self.check_against_upstream().returncode, 0, "precondition: in sync")
+
+        # Edited in the mirror, not upstream: that is the direction this check
+        # exists for — a mirrored skill that no longer matches what was reviewed.
+        mirrored = self.mirror / self.SKILL / "references" / "n.md"
+        mirrored.write_text("edited downstream\n", encoding="utf-8")
+        proc = self.check_against_upstream()
+        self.assertEqual(proc.returncode, 1, "a locally edited mirror went unnoticed")
+        self.assertIn("differs from upstream", proc.stderr)
+
+    def test_check_against_upstream_stays_green_when_in_sync(self):
+        # Positive control for both: a comparison that always fails would
+        # satisfy them and block every legitimate sync.
+        self.assertEqual(self.sync().returncode, 0)
+        proc = self.check_against_upstream()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("mirror ok", proc.stdout)
+
+    def test_a_locked_skill_without_a_skill_md_is_drift(self):
+        # The third unguarded condition: upstream.lock names a skill that has
+        # no SKILL.md in this repository.
+        self.assertEqual(self.sync().returncode, 0, "precondition: a clean sync")
+        lock = self.mirror / "upstream.lock"
+        lock.write_text(lock.read_text(encoding="utf-8")
+                        + "ghost-skill 0123456789abcdef 2026-09-13\n", encoding="utf-8")
+        proc = run(self.mirror / "scripts" / "sync-from-upstream.sh", "--check")
+        self.assertEqual(proc.returncode, 1, "a lock entry without a skill went unnoticed")
+        self.assertIn("has no SKILL.md here", proc.stderr)
+
     def test_a_declaration_without_a_licence_file_is_refused_before_any_write(self):
         self.assertEqual(self.sync().returncode, 0, "precondition: a clean first sync")
         before = self.mirror_state()
