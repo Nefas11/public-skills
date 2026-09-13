@@ -253,6 +253,33 @@ class TestTheInventoryIsReal(MirrorSkeleton):
         (target / "unexpected.md").write_text("synthetic payload\n", encoding="utf-8")
         self.assert_fails("symlink")
 
+    def test_a_symlinked_entry_on_one_side_only_is_drift(self):
+        """Guards the one-sided-symlink rule, which nothing covered.
+
+        Senox measured the gap: replacing that condition with `if false` left
+        all 46 tests green. A copy whose LICENSE is a symlink to an identical
+        file compares equal to `diff`, but it is not the same artefact — the
+        published copy would depend on a link target nobody mirrors.
+        """
+        licence = self.copy_path() / "LICENSE"
+        licence.unlink()
+        licence.symlink_to(self.repo / SKILL / "LICENSE")
+        self.assert_fails("symlink on one side only")
+
+    def test_the_reverse_direction_is_drift_too(self):
+        # Source linked, copy real: the same disagreement, mirrored.
+        root_licence = self.repo / SKILL / "LICENSE"
+        contents = root_licence.read_text(encoding="utf-8")
+        spare = self.repo / SKILL / "references" / "LICENSE.txt"
+        spare.write_text(contents, encoding="utf-8")
+        root_licence.unlink()
+        root_licence.symlink_to(spare)
+        self.assert_fails("symlink on one side only")
+
+    def test_matching_real_files_stay_green(self):
+        # Positive control for both: the ordinary case must not trip the rule.
+        self.assert_ok()
+
     def test_a_dangling_symlink_with_an_allowed_name_is_drift(self):
         # `templates` is an allowed name, so the inventory waved it through,
         # and the counterpart check used `-e`, which is false for a link whose
@@ -421,6 +448,47 @@ class TestLicenceComesFromTheFrontmatter(MirrorSkeleton):
             path.write_text('---\nname: demo-skill\ndescription: |\n'
                             '  {"mode": "read-only"}\n---\n\n# demo-skill\n', encoding="utf-8")
         self.assert_ok()
+
+    def test_a_block_scalar_license_still_declares_one(self):
+        """`license: >-` with the value on the next line is a declaration.
+
+        My own regression from the whitelist rewrite: the block-scalar branch
+        set the in-block flag and skipped ahead before checking the key, so the
+        declaration vanished together with its body and the skill read as
+        unlicensed. Raised in the fourth mirror review.
+        """
+        for marker in (">-", "|", ">", "|-"):
+            with self.subTest(marker=marker):
+                self.write_skill(f"license: {marker}\n  MIT-0")
+                self.assert_fails("declares a license")
+
+    def test_a_block_scalar_license_with_its_file_passes(self):
+        # Positive control: the same shape must be accepted once the licence
+        # text is actually there.
+        self.write_skill("license: >-\n  MIT-0")
+        for path in (self.repo / SKILL / "LICENSE",
+                     *(self.repo / SKILL / rel / "LICENSE" for rel in COPIES)):
+            path.write_text(LICENCE_TEXT, encoding="utf-8")
+        self.assert_ok()
+
+    def test_an_indented_comment_is_still_a_comment(self):
+        """Comments belong to the supported grammar at any indentation.
+
+        The comment rule matched only column one, so the indentation rule
+        behind it rejected `  # note` as unknown structure — a false rejection
+        of valid YAML, also mine from the whitelist rewrite.
+        """
+        for path in (self.repo / SKILL / "SKILL.md",
+                     *(self.repo / SKILL / rel / "SKILL.md" for rel in COPIES)):
+            path.write_text("---\nname: demo-skill\n  # explanatory comment\n"
+                            "description: fixture\n---\n\n# demo-skill\n", encoding="utf-8")
+        self.assert_ok()
+
+    def test_indentation_that_is_not_a_comment_is_still_refused(self):
+        # The counterpart: widening the comment rule must not open the door to
+        # real nesting.
+        self.write_skill("metadata:\n  nested: value")
+        self.assert_fails("cannot read")
 
     def test_a_declaration_plus_the_file_passes(self):
         # Positive control: the rule must accept the legitimate combination.

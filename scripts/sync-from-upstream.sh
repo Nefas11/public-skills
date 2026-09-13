@@ -93,7 +93,9 @@ license_status() { # $1 = SKILL.md
     inblock && ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]/) { next }
     { inblock = 0 }
     $0 ~ /^[[:space:]]*$/ { next }
-    $0 ~ /^#/ { next }
+    # Comments may be indented. Matching only column one let the indentation
+    # rule below reject a perfectly ordinary `  # note` as unknown structure.
+    $0 ~ /^[[:space:]]*#/ { next }
     # An indented line outside a block scalar means nesting this parser does
     # not model — an indented root map, a nested mapping, a sequence item.
     $0 ~ /^[[:space:]]/ { bail() }
@@ -115,7 +117,14 @@ license_status() { # $1 = SKILL.md
       sub(/[[:space:]]*$/, "", key)
       sub(/^[[:space:]]+/, "", rest)
       sub(/[[:space:]]+$/, "", rest)
-      if (rest ~ /^[|>][0-9+-]*$/) { inblock = 1; next }
+      # A block scalar is still the value of that key: `license: >-` with MIT-0 on
+      # the next line declares a licence. Marking it had to happen before the
+      # branch skipped ahead, or the declaration vanished with the body.
+      if (rest ~ /^[|>][0-9+-]*$/) {
+        if (key == "license") { found = 1 }
+        inblock = 1
+        next
+      }
       if (rest == "") { bail() }   # value on a following line: nesting again
       if (rest ~ /^[{[]/) { bail() }  # inline flow collection
       if (key == "license") { found = 1 }
