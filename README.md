@@ -42,11 +42,15 @@ layout, so the directory can serve as a project-level skill root as it is.
 ## Tests
 
 `first-principles-reduction/tests/` pins the skill's contract and proves that
-its acceptance evaluator can fail. CI runs them on every push:
+its acceptance evaluator can fail. `tests/` does the same for the mirror gate
+itself: it deletes and corrupts files in a throwaway skeleton and requires
+`sync-from-upstream.sh --check` to go red. A gate that cannot be made to fail
+is not evidence that the mirror is true. CI runs all of it on every push:
 
 ```bash
-python3 -m unittest discover -s first-principles-reduction/tests -v
 sh scripts/sync-from-upstream.sh --check
+python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s first-principles-reduction/tests -v
 ```
 
 ## Updating from upstream

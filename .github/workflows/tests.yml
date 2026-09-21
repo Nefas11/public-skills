@@ -11,6 +11,10 @@ jobs:
       # Every skill directory must be recorded in upstream.lock and its
       # installed copies must match the skill root.
       - run: sh scripts/sync-from-upstream.sh --check
+      # The gate above only reports what it looks at, so it is itself under
+      # test: tests/ deletes and corrupts files in a throwaway skeleton and
+      # requires the same script to go red.
+      - run: python3 -m unittest discover -s tests -v
       # Skill-local suites live next to their skill; unittest discovery does not
       # descend into them. Every mirrored skill that ships tests gets a line.
       - run: python3 -m unittest discover -s first-principles-reduction/tests -v
