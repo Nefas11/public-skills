@@ -30,7 +30,7 @@ status=0
 # above all — was invisible: both copies could declare `license: MIT-0` and
 # ship no terms while --check stayed green. The copies are what people install
 # and what gets published, so they are the artefact a licence claim has to be
-# true of. Same class of hole as the one reviewed upstream in claude-skills#36.
+# true of. Same class of hole as the one found in review upstream.
 resource_files="LICENSE"
 resource_dirs="references agents scripts templates"
 
@@ -296,7 +296,7 @@ sync() { # $1 = upstream checkout, rest = skills
   # state its own gate then reports as broken, after the fact. Measured on a
   # throwaway tree: upstream drops the licence file but keeps the declaration,
   # the sync copies it happily, and only the next --check complains. Same shape
-  # as the write-before-validation hole reviewed in claude-skills#36.
+  # as the write-before-validation hole found in review upstream.
   for s in $skills; do
     if [ ! -f "$up/$s/SKILL.md" ]; then echo "no skill at $up/$s" >&2; exit 2; fi
     if [ -n "$(git -C "$up" status --porcelain -- "$s")" ]; then

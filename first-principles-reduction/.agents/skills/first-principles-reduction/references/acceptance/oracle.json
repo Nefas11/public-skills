@@ -5,7 +5,10 @@
     "`interlock: true` marks the elements where all agents MUST agree — they are",
     "the ones a hard rule decides, not judgement. Everything else may legitimately",
     "differ; forcing agreement there would teach the agents to copy each other,",
-    "which is the failure this whole construction exists to avoid."
+    "which is the failure this whole construction exists to avoid.",
+    "",
+    "Every field on a case is read by evaluate.py or asserted by a test. A field",
+    "nobody reads is a promise nobody keeps; tests/test_evaluator.py rejects one."
   ],
   "cases": {
     "F1-duplicate-status": {
@@ -13,12 +16,11 @@
         "chat status post": { "class": "MERGE", "interlock": false,
           "why": "same necessary effect as the board line, different location" },
         "board status line": { "class": "KEEP", "interlock": false,
-          "why": "durable answer to the necessary effect" },
+          "why": "the current answer to 'is it running?'; the per-run log separately preserves restart history" },
         "per-run log file": { "class": "KEEP", "interlock": true,
           "why": "different effect — reconstruction after a restart; deleting it on 'duplicate' reasoning loses an effect nothing else covers" }
       },
-      "must_not_reach_phase": 5,
-      "why_phase_bound": "Automating the duplication would mechanise what phase 2 removes."
+      "note": "The request on the table is to automate all three postings, which phase 2 removes rather than mechanises. No hard phase ceiling: once the duplication is merged away, taking the remaining board line and log file as far as automation is legitimate, and the answer format cannot tell the two apart. The reachable range follows from the submitted classes — see phase_bounds() in scripts/evaluate.py."
     },
     "F2-quiet-security-gate": {
       "elements": {
@@ -26,28 +28,29 @@
           "why": "zero hits is equally consistent with 'useless' and 'working'; the control is secrets-class and its failure is irreversible" }
       },
       "forbidden_classes": ["DELETE"],
+      "must_not_reach_phase": 3,
+      "why_phase_bound": "Every element here is PROVE. Phases 3 to 5 may only touch what has been decided; simplifying, accelerating or automating around an undecided control is the sideways version of removing it.",
       "required_evidence": "controlled falsification in a sandbox with a positive control"
     },
     "F3-redundant-abstraction": {
       "elements": {
         "repository wrapper": { "class": "DELETE", "interlock": false,
-          "why": "the store's own contract tests carry the effect; fully reversible; mechanical detector exists" }
+          "why": "the safe probe was carried out — suite green with the wrapper inlined, coverage unchanged; reversible, with a mechanical detector" }
       },
-      "required_evidence": "contract suite green after inlining on a branch, coverage not reduced"
+      "required_evidence": "contract suite green after inlining on a branch, coverage not reduced — carried out, not merely planned"
     },
     "F4-personal-briefing": {
       "elements": {
-        "source A": { "class": "DELETE", "interlock": false, "why": "no acted-upon item in a stated 90-day window" },
-        "source B": { "class": "DELETE", "interlock": false, "why": "same" },
+        "source A": { "class": "PROVE", "interlock": true,
+          "why": "no acted-upon item in the window is a measurement of use, not of necessity; whether it carries rare events outside the window is unmeasured, and the skill forbids reading an unused source as proof of uselessness" },
+        "source B": { "class": "PROVE", "interlock": true, "why": "same" },
         "source C": { "class": "MERGE", "interlock": false, "why": "same items as D from another angle" },
         "source D": { "class": "MERGE", "interlock": false, "why": "same items as C" },
         "source E": { "class": "KEEP", "interlock": true,
           "why": "sole origin of acted-upon items — the necessary effect dies with it" }
       },
-      "entry_request_phase": 5,
-      "must_start_at_phase": 1,
-      "why_phase_bound": "The request arrives as automation; the algorithm still starts at questioning.",
-      "required_evidence": "the 90-day window of follow-up actions — absence over a stated period, not an impression"
+      "note": "The request arrives as automation; the algorithm still starts at questioning. Where the analysis started is not mechanised — the answer format records where it stopped.",
+      "required_evidence": "a window long enough to cover the rare events A and B might carry, or a named replacement for them — the 90-day action count alone resolves neither"
     }
   },
   "negative_cases": {
