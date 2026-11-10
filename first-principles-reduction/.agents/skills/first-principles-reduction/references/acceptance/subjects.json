@@ -8,11 +8,21 @@
     "The answers live in oracle.json and are loaded by scripts/evaluate.py only",
     "AFTER an answer exists. This separation is procedural, not secrecy: an agent",
     "with file access can read anything. What it buys is that the comparison is",
-    "mechanical and that a wrong oracle can be detected — see tests/test_evaluator.py."
+    "mechanical and that a wrong oracle can be detected — see tests/test_evaluator.py.",
+    "",
+    "Convention: a fact ABOUT one element uses that element's name as its key.",
+    "The tests rely on it to check element-by-element that the evidence a class",
+    "needs is actually present — an unnamed fact could otherwise justify a class",
+    "for a different element in the same case.",
+    "",
+    "Evidence about a probe is an OBJECT, never a sentence: safe_probe is",
+    "'carried out' or 'not carried out', outcome is 'pass' or 'fail'. Prose was",
+    "matched by substring once, and 'no safe probe was carried out' contained",
+    "'was carried out' — the negation read as the evidence it denied."
   ],
   "answer_format": {
     "elements": "object mapping element name -> one of DELETE | MERGE | KEEP | PROVE",
-    "stopped_at_phase": "integer 1..5, the phase the analysis stopped at (positive cases: omit or null)",
+    "stopped_at_phase": "required integer 1..5 for every positive case: the last phase with supported analytical progress, not the last report heading written; omit for negative cases",
     "behaviour": "for negative cases: stop-at-phase-1-or-2 | no-clearance-escalate | classify-PROVE | do-not-trigger"
   },
   "cases": [
@@ -20,7 +30,7 @@
       "id": "F1-duplicate-status",
       "domain": "process",
       "subject": "Crew posts run status to a chat channel, a per-run log file and a shared board line.",
-      "necessary_effect": "An observer can answer 'is it running?' without asking.",
+      "necessary_effect": "An observer can answer 'is it running?' without asking, and runs can be reconstructed after a restart.",
       "facts": {
         "the log file is the only one that survives a restart": true,
         "the request on the table is to automate all three postings": true
@@ -30,7 +40,7 @@
     {
       "id": "F2-quiet-security-gate",
       "domain": "rule",
-      "subject": "A pre-push gate that scans for credentials. In four weeks it has blocked nothing.",
+      "subject": "A pre-push credential scanner, run as a gate before every push. In four weeks it has blocked nothing.",
       "necessary_effect": "No credential reaches a remote.",
       "facts": {
         "control_class": "secrets",
@@ -42,12 +52,13 @@
     {
       "id": "F3-redundant-abstraction",
       "domain": "code",
-      "subject": "A repository layer over a data store: one implementation, no test doubles it, three years without a swap.",
+      "subject": "A repository wrapper over a data store: one implementation, no test doubles it, three years without a swap.",
       "necessary_effect": "Call sites reach the store through a checked contract.",
       "facts": {
         "reversible": true,
         "the store ships its own contract tests": true,
-        "a type error surfaces at compile time if the layer goes": true
+        "a type error surfaces at compile time if the layer goes": true,
+        "repository wrapper": { "safe_probe": "carried out", "outcome": "pass", "detail": "inlined on a branch, the full contract suite ran green and coverage did not drop" }
       },
       "elements": ["repository wrapper"]
     },
@@ -60,7 +71,9 @@
         "observation window": "90 days of the reader's own follow-up actions",
         "source A": "nothing acted upon in the window",
         "source B": "nothing acted upon in the window",
-        "source C and D": "report the same items from different angles",
+        "whether A or B carries rare events outside the window": "not measured",
+        "source C": "reports the same items as D, from another angle",
+        "source D": "reports the same items as C, from another angle",
         "source E": "sole origin of several acted-upon items"
       },
       "elements": ["source A", "source B", "source C", "source D", "source E"]

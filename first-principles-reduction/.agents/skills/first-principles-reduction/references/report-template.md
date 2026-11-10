@@ -72,5 +72,8 @@ from Phase 5 — an unanswered one disqualifies the candidate.>
 
 ---
 
-**Nothing in this report was executed.** <For a repository: `git status
---porcelain` was byte-identical before and after — paste both.>
+**Nothing in this report was executed.** <State exactly what was inspected.
+For a repository: `git status --porcelain` was byte-identical before and after
+— paste both — and, where available, diffs or content hashes were compared;
+status equality alone is not proof of identical file contents. If a check was
+unavailable, say so. Never invent a successful probe or a modification count.>

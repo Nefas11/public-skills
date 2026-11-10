@@ -58,12 +58,18 @@ python3 -m unittest discover -s first-principles-reduction/tests -v
 For maintainers with a checkout of the source repository:
 
 ```bash
-scripts/sync-from-upstream.sh ../claude-skills                 # every skill in upstream.lock
-scripts/sync-from-upstream.sh ../claude-skills some-new-skill  # add a skill
-scripts/sync-from-upstream.sh --check ../claude-skills         # verify; exit 1 on drift
+scripts/sync-from-upstream.sh ../upstream                 # every skill in upstream.lock
+scripts/sync-from-upstream.sh ../upstream some-new-skill  # add a skill
+scripts/sync-from-upstream.sh --check ../upstream         # verify; exit 1 on drift
 ```
 
 ## License
 
-Not chosen yet. Until a license file is added, no reuse rights are granted
-beyond what GitHub's terms allow for public repositories.
+Each skill is licensed on its own terms: see the `LICENSE` file inside the
+skill's directory. [`first-principles-reduction`](first-principles-reduction/LICENSE)
+is released under MIT-0 (MIT No Attribution).
+
+Everything outside the skill directories — this README, the sync script, its
+tests and the CI workflow — has no license chosen yet; no reuse rights are
+granted for those files beyond what GitHub's terms allow for public
+repositories.

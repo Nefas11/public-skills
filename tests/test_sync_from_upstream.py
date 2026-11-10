@@ -2,7 +2,7 @@
 
 The mirror check exists to prove that what this repository publishes is what
 upstream reviewed. It had the hole its upstream counterpart was found to have
-in claude-skills#36: `check_self` walked a hard-coded list of directories, so a
+in review: `check_self` walked a hard-coded list of directories, so a
 loose file beside SKILL.md never entered the comparison. Measured before the
 fix, on a copy of this repository with a licence added by hand:
 
@@ -106,7 +106,7 @@ class TestCleanSkeletonPasses(MirrorSkeleton):
 
 
 class TestLicenceTravelsWithTheCopies(MirrorSkeleton):
-    """The regression from claude-skills#36, in this repository's own script."""
+    """The regression found upstream in review, in this repository's own script."""
 
     def test_a_missing_licence_in_a_copy_is_drift(self):
         (self.copy_path() / "LICENSE").unlink()
@@ -256,7 +256,7 @@ class TestTheInventoryIsReal(MirrorSkeleton):
     def test_a_symlinked_entry_on_one_side_only_is_drift(self):
         """Guards the one-sided-symlink rule, which nothing covered.
 
-        Senox measured the gap: replacing that condition with `if false` left
+        Review measured the gap: replacing that condition with `if false` left
         all 46 tests green. A copy whose LICENSE is a symlink to an identical
         file compares equal to `diff`, but it is not the same artefact — the
         published copy would depend on a link target nobody mirrors.
@@ -521,7 +521,7 @@ class TestOrdinaryDriftStillCaught(MirrorSkeleton):
 class TestSyncValidatesBeforeWriting(unittest.TestCase):
     """The sync path needs the licence rule too, not only --check.
 
-    Found while widening the review findings from claude-skills#36 to this
+    Found while widening the upstream review findings to this
     repository. Measured before the fix, on a throwaway tree: upstream drops the
     LICENSE file but keeps `license:` in its frontmatter, the sync copies the
     skill happily, and only the *next* --check reports the mirror as broken.
@@ -629,7 +629,7 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
     def test_undecidable_frontmatter_is_refused_before_any_write(self):
         """The sync-side guard, exercised directly.
 
-        Senox measured the gap: removing `unreadable_frontmatter` from the sync
+        Review measured the gap: removing `unreadable_frontmatter` from the sync
         preflight left every test green, because only the check path was
         covered. Each shape below is a real declaration or a shape the parser
         cannot read, and each must stop the sync with the mirror untouched.
@@ -744,7 +744,7 @@ class TestSyncValidatesBeforeWriting(unittest.TestCase):
     def test_no_refusal_path_writes_anything(self):
         """Every way the sync can abort must leave the mirror untouched.
 
-        Senox asked for "abgewiesener Sync → keine Dateien verändert" as a
+        Review asked for "a refused sync changes no file" as a
         general rule, not only for the licence case. Each branch below aborts
         for a different reason; all of them are checked against the full tree.
         """
